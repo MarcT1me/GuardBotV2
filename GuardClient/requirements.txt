@@ -1,0 +1,5 @@
+requests
+
+dearpygui
+
+loguru

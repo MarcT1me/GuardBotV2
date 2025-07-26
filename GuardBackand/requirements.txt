@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+aiohttp
+
+authlib
+httpx
+itsdangerous
+
+sqlalchemy
+psycopg2-binary
+pydantic
+
+dotenv
+loguru
