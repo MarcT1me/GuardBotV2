@@ -1,4 +1,6 @@
 import json
+import os.path
+from pprint import pformat
 from typing import Self
 import time
 import webbrowser
@@ -9,13 +11,15 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import dearpygui.dearpygui as dpg
 import requests
 from loguru import logger
+from dotenv import load_dotenv
 
-BACKEND_URL = "http://localhost:8000"
+load_dotenv()
+BACKEND_URL = os.getenv("BACKEND_URL")
 
 
 class Application:
     WIDTH = 600
-    HEIGHT = 500
+    HEIGHT = 300
 
     instance: Self
 
@@ -27,8 +31,9 @@ class Application:
         self.server_thread = None
 
         self.user_id = None
-        self.guilds = []
+        self.guilds = {}
         self.selected_guild_id = None
+        self.selected_channel_id = None
 
         self.setup()
         Application.instance = self
@@ -43,7 +48,7 @@ class Application:
         dpg.create_viewport(
             title='Discord Bot Client',
             width=Application.WIDTH, height=Application.HEIGHT,
-            decorated=True, disable_close=False
+            decorated=True, disable_close=True
         )
         dpg.set_primary_window(self.main_window, True)
         dpg.setup_dearpygui()
@@ -69,6 +74,10 @@ class Application:
             with dpg.group(tag="guild_panel", show=False):
                 dpg.add_text("Select Discord server:")
                 dpg.add_combo(tag="guild_combo", width=300, callback=self.on_guild_selected)
+
+            with dpg.group(tag="channel_panel", show=False):
+                dpg.add_text("Select Discord server:")
+                dpg.add_combo(tag="channel_combo", width=300, callback=self.on_channel_selected)
 
             dpg.add_separator()
 
@@ -115,22 +124,24 @@ class Application:
         dpg.set_value("status", "Status: Check your browser for Discord login")
 
     def auth_callback(self, state):
+        logger.info("auth_callback: {}".format(state))
         try:
             response = Request(
                 Request.Method.Get,
                 f"{BACKEND_URL}/user/session?state={state}"
             )
             resp = response.json()
-            logger.info(f"Auth callback: {response.status_code}, {type(resp)}, {resp}")
+            logger.info(f"Auth callback: {response.status_code}, {type(resp)},\n{pformat(resp)}")
 
             if response.status_code == 200:
                 self.user_id = resp.get("user_id")
-                self.guilds = resp.get("guilds", [])
+                self.guilds = resp.get("guilds", {})
 
                 dpg.configure_item("auth_panel", show=False)
                 dpg.configure_item("guild_panel", show=True)
 
-                guild_names = [g['name'] for g in self.guilds]
+                guild_names = [g['name'] for g in self.guilds.values()]
+                logger.info(f"guild_names: {guild_names}")
                 dpg.configure_item("guild_combo", items=guild_names)
 
                 dpg.set_value("status", f"Status: Authorized ({resp.get('status', 'err')}) - {self.user_id}")
@@ -148,11 +159,25 @@ class Application:
 
     def on_guild_selected(self, _, app_data):
         selected_guild_name = app_data
-        for guild in self.guilds:
+        for guild in self.guilds.values():
             if guild['name'] == selected_guild_name:
-                self.selected_guild_id = guild['id']
-                self.config.server_id = guild['id']
+                self.selected_guild_id = int(guild['id'])
+                self.config.server_id = int(guild['id'])
                 dpg.set_value("status", f"Status: Selected server: {selected_guild_name}")
+
+                guild_names = [c['name'] for c in guild["channels"].values()]
+                dpg.configure_item("channel_combo", items=guild_names)
+
+                dpg.configure_item("channel_panel", show=True)
+                break
+
+    def on_channel_selected(self, _, app_data):
+        selected_channel_name = app_data
+        for channel in self.guilds[str(self.selected_guild_id)]["channels"].values():
+            if channel['name'] == selected_channel_name:
+                self.selected_channel_id = int(channel['id'])
+                self.config.channel_id = int(channel['id'])
+                dpg.set_value("status", f"Status: Selected channel: {selected_channel_name}")
                 dpg.configure_item("message_panel", show=True)
                 break
 
@@ -206,7 +231,13 @@ class Application:
 
     def send_message(self):
         if not self.user_id or not self.selected_guild_id:
-            dpg.set_value("status", "Status: Not authenticated or server not selected")
+            dpg.set_value("status", "Status: Not authenticated")
+            return
+        if not self.selected_guild_id:
+            dpg.set_value("status", "Status: Server not selected")
+            return
+        if not self.selected_guild_id:
+            dpg.set_value("status", "Status: Channel not selected")
             return
 
         response = Request(
@@ -215,6 +246,7 @@ class Application:
             data={
                 "user_id": self.user_id,
                 "server_id": self.selected_guild_id,
+                "channel_id": self.selected_channel_id,
             }
         )
 
@@ -262,23 +294,32 @@ class Application:
 
         self.config.open()
 
-        if self.config.state:
-            self.auth_callback(self.config.state)
-            if self.config.server_id:
-                guild = None
-                for guild in self.guilds:
-                    if guild["id"] == self.config.server_id:
-                        guild = guild
-                        break
-                if guild:
-                    dpg.configure_item("guild_combo", default_value=guild["name"])
+        try:
+            if self.config.state:
+                self.auth_callback(self.config.state)
+                logger.info("login")
+
+                if self.config.server_id:
+                    guild = None
+                    for guild in self.guilds:
+                        if guild["id"] == self.config.server_id:
+                            guild = guild
+                            break
+                    if guild:
+                        dpg.configure_item("guild_combo", default_value=guild["name"])
+
+                        channel = None
+                        for channel in self.guilds[self.config.server_id]["channels"]:
+                            if channel["id"] == self.config.channel_id:
+                                channel = channel
+                                break
+                        if channel:
+                            dpg.configure_item("guild_combo", default_value=channel["name"])
+        except Exception as e:
+            dpg.set_value("status", f"Status: Error: {e}")
 
         while self.running:
             dpg.render_dearpygui_frame()
-
-        self.config.save()
-
-        self.close()
 
     def status_updater(self):
         while self.running:
@@ -288,19 +329,24 @@ class Application:
     @staticmethod
     def update_status():
         try:
-            response = requests.get(f"{BACKEND_URL}/test/health")
+            response = Request(Request.Method.Get, f"{BACKEND_URL}/test/health")
             backend_status = "OK" if response.status_code == 200 else "Error"
             dpg.set_value("backend_status", f"Backend: {backend_status}")
 
             if response.status_code == 200:
-                response = requests.get(f"{BACKEND_URL}/test/test_bot")
+                logger.info("status - OK")
+                response = Request(Request.Method.Get, f"{BACKEND_URL}/test/test_bot")
                 bot_status = "OK" if response.status_code == 200 else "Error"
                 dpg.set_value("bot_status", f"Bot: {bot_status}")
         except:
+            logger.exception("status - Unavailable")
             dpg.set_value("backend_status", "Backend: Unavailable")
             dpg.set_value("bot_status", "Bot: Unavailable")
 
     def close(self):
+        self.running = False
+        self.config.save()
+
         dpg.destroy_context()
         self.stop_auth_server()
 
@@ -309,27 +355,37 @@ class Config:
     def __init__(self):
         self.state = None
         self.server_id = None
+        self.channel_id = None
+
+        if not os.path.exists("cfg.json"):
+            with open("cfg.json", "w") as f:
+                json.dump({}, f)
 
     def open(self):
         with open("cfg.json", "r") as f:
             data = json.load(f)
             self.state = data.get("status")
             self.server_id = data.get("server_id")
+            self.channel_id = data.get("channel_id")
 
     def save(self):
         with open("cfg.json", "w") as f:
             data = {
                 "status": self.state,
                 "server_id": self.server_id,
+                "channel_id": self.channel_id,
             }
             json.dump(data, f)
 
 
 class Request:
     class Method:
-        Get = requests.get
-        Post = requests.post
-        Put = requests.put
+        __session = requests.Session()
+        __session.verify = False
+
+        Get = __session.get
+        Post = __session.post
+        Put = __session.put
 
     def __init__(self, method: Callable | Method, url, data={}):
         self.response = None
@@ -372,4 +428,3 @@ class AuthHandler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     app = Application()
     app.run()
-    exit(0)

@@ -1,4 +1,6 @@
+import json
 import os
+import sys
 from pprint import pformat
 
 import discord
@@ -54,6 +56,10 @@ class GuardBotCog(commands.Cog):
             logger.error(f"msg command exception: {e}")
             return web.json_response({"error": str(e)}, status=500)
 
+    @discord.app_commands.command(name="exit")
+    async def exit_command(self, _: discord.Interaction):
+        sys.exit(0)
+
 
 class GuardBot(commands.Bot):
     def __init__(self):
@@ -62,6 +68,8 @@ class GuardBot(commands.Bot):
         intents.messages = True
         intents.guilds = True
         super().__init__(command_prefix="/", intents=intents)
+
+        self.bot_guilds = dict()
 
         self.site = None
         self.runner = None
@@ -73,6 +81,7 @@ class GuardBot(commands.Bot):
         logger.info("🌐 Starting HTTP server...")
         self.app.router.add_get('/health', self.health_check)
         self.app.router.add_post('/send_message', self.handle_send)
+        self.app.router.add_post('/overhaul_guilds', self.handle_guild_request)
 
         self.runner = web.AppRunner(self.app)
         await self.runner.setup()
@@ -88,12 +97,8 @@ class GuardBot(commands.Bot):
 
         guilds = {}
         for guild in self.guilds:
-            members = {}
-            for member in guild.members:
-                members[member.id] = member.name
             guilds[guild.id] = {
                 "name": guild.name,
-                "members": members
             }
 
         logger.info(f"Guilds:\n{pformat(guilds)}")
@@ -111,6 +116,7 @@ class GuardBot(commands.Bot):
             logger.info(f"request data:\n{pformat(data)}")
             user_id = int(data["user_id"])
             server_id = int(data["server_id"])
+            channel_id = int(data["channel_id"])
             content = data["content"]
 
             server = self.get_guild(server_id)
@@ -118,15 +124,15 @@ class GuardBot(commands.Bot):
                 logger.warning(f"server not found")
                 return web.json_response({"status": "error", "error": "Server not found"}, status=404)
 
-            channel = server.system_channel
-            if not channel:
-                logger.warning(f"system_channel not found")
-                return web.json_response({"status": "error", "error": "System channel not found"}, status=404)
-
             user = server.get_member(user_id)
             if not user:
                 logger.warning(f"member not found")
                 return web.json_response({"status": "error", "error": "User not found"}, status=404)
+
+            channel = server.get_channel(channel_id)
+            if not channel:
+                logger.warning(f"system_channel not found")
+                return web.json_response({"status": "error", "error": "System channel not found"}, status=404)
 
             embed = discord.Embed(
                 title="Сообщение от пользователя",
@@ -137,6 +143,33 @@ class GuardBot(commands.Bot):
             await channel.send(embed=embed)
 
             return web.json_response({"success": "sent"}, status=200)
+
+        except Exception as e:
+            logger.error(f"bot exception: {e}")
+            return web.json_response({"status": "error", "error": str(e)}, status=500)
+
+    async def handle_guild_request(self, request):
+        logger.info(f"Guild request: {request}")
+
+        try:
+            request_data = await request.json()
+            guilds = request_data["guilds"]
+
+            approved_guild = {}
+
+            for guild in guilds:
+                if bot_guild := self.get_guild(int(guild["id"])):
+                    approved_guild[int(guild["id"])] = {
+                        "id": int(guild["id"]),
+                        "name": guild["name"],
+                        "guild": guild,
+                        "channels": {int(channel.id): {"id": int(channel.id), "name": channel.name} for channel in
+                                     bot_guild.channels},
+                        "members": {int(member.id): {"id": int(member.id), "name": member.name} for member in
+                                    bot_guild.members}
+                    }
+
+            return web.json_response({"success": "overhaul", "approved": json.dumps(approved_guild)}, status=200)
 
         except Exception as e:
             logger.error(f"bot exception: {e}")

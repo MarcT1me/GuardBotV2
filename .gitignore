@@ -1,4 +1,15 @@
-.env
 __pycache__
 .venv
 .idea
+
+.env
+
+embed
+*.vbs
+
+build
+dist
+*.spec
+
+*.zip
+*.rar

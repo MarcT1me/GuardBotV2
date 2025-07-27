@@ -248,12 +248,21 @@ async def get_session(request: Request):
     if session["host"] != host:
         return unauthorized_response()
 
+    async with aiohttp.ClientSession() as s:
+        payload = {
+            "guilds": session["guilds"],
+        }
+        async with s.post(f"{BOT_API_URL}/overhaul_guilds", json=payload) as response:
+            resp = await response.json()
+            logger.info(f"bot send: {response.status}, {type(resp)}, {resp}")
+            guilds = json.loads(resp['approved'])
+
     return Response(
         status_code=200,
         content=json.dumps({
             "status": "success",
             "user_id": session["user_id"],
-            "guilds": session["guilds"]
+            "guilds": guilds
         })
     )
 
@@ -439,6 +448,7 @@ async def reset_message(
 class SendMessageRequest(BaseModel):
     user_id: int
     server_id: int
+    channel_id: int
 
 
 @app.post("/message/send")
@@ -459,6 +469,7 @@ async def send_message(
             payload = {
                 "user_id": request.user_id,
                 "server_id": request.server_id,
+                "channel_id": request.channel_id,
                 "content": message.content,
             }
             async with session.post(f"{BOT_API_URL}/send_message", json=payload) as response:
